@@ -1,0 +1,19 @@
+GAL16V8
+gluez80
+
+A4 A5 A6 A7 A15 NC M1 MREQ IOREQ GND
+RFSH NC NC NC /IACK UARTENP /UARTEN /RAMEN /ROMEN VCC
+
+ROMEN = /MREQ * RFSH * /A15
+RAMEN = /MREQ * RFSH * A15
+UARTEN = /IOREQ * /A7 * /A6 * /A5 * /A4
+UARTENP = /IOREQ * /A7 * /A6 * /A5 * /A4
+IACK = /IOREQ * /M1
+
+DESCRIPTION
+Z80 computer 2 glue logic and address decoding
+/ROMEN enables the ROM for memory cycles from 0000h to 0fffh
+/RAMEN enables the RAM for memory cycles from 1000h to ffffh
+/UARTEN enables the DUART for I/O cycles from port 0 to 15
+UARTENP is the negation of /UARTEN, needed for the DUART wait state logic
+/IACK signifies an interrupt acknowledge cycle
