@@ -5,7 +5,6 @@
 *.fus
 *.pin
 *.bck
-*.pdf
 *.sch-bak
 *.dcm
 rom/monitor
