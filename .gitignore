@@ -1,3 +1,5 @@
+*.o
+*.d
 *.swp
 *.chp
 *.fus
@@ -6,3 +8,6 @@
 *.pdf
 *.sch-bak
 *.dcm
+rom/monitor
+*.lst
+emu/z80v2emu
