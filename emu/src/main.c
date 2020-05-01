@@ -11,6 +11,7 @@
 #include <sys/select.h>
 #include <sys/mman.h>
 #include "emu.h"
+#include "dbg.h"
 
 static void sighandler(int s);
 static int parse_args(int argc, char **argv);
@@ -130,6 +131,10 @@ static int parse_args(int argc, char **argv)
 						return -1;
 					}
 					rom_fname = argv[i];
+					break;
+
+				case 'd':
+					opt_loginstr = 1;
 					break;
 
 				default:
