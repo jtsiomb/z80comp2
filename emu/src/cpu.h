@@ -11,7 +11,7 @@ enum {
 };
 
 struct regs8 {
-	uint8_t a, f, b, c, d, e, h, l;
+	uint8_t f, a, c, b, e, d, l, h;
 };
 struct regs16 {
 	uint16_t af, bc, de, hl;
@@ -31,9 +31,11 @@ struct registers {
 
 void cpu_reset(void);
 void cpu_step(void);
+void cpu_intr(void);
 void cpu_breakpt(void);
 struct registers *cpu_regs(void);
 int cpu_get_halt(void);
+int cpu_get_intr(void);
 
 int cpu_set_named(const char *name, unsigned int val);
 int cpu_get_named(const char *name);

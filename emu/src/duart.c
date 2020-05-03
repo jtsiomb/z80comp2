@@ -21,6 +21,10 @@ enum {
 };
 
 enum {
+	MODE1_RXINT_FFULL	= 0x40
+};
+
+enum {
 	CMD_RX_ONOFF	= 0x03,
 	CMD_TX_ONOFF	= 0x0c,
 	CMD_RST_MPTR	= 0x10,
@@ -43,15 +47,31 @@ enum {
 	STAT_ERR_BRK	= 0x80
 };
 
+enum {
+	INTR_TXA		= 0x01,
+	INTR_RXA		= 0x02,
+	INTR_DBRKA		= 0x04,
+	INTR_CTR		= 0x08,
+	INTR_TXB		= 0x10,
+	INTR_RXB		= 0x20,
+	INTR_DBRKB		= 0x40,
+	INTR_INP		= 0x80
+};
+
+#define RXFIFO_SZ	4
+#define RXFIFO_NEXT(x)	(((x) + 1) & (RXFIFO_SZ - 1))
+
 struct port {
 	uint8_t mode[2];
 	uint8_t clksel;
 	int modeptr;
 	int tx, rx;
-	uint8_t rxfifo[4];
-	int rxfifo_in, rxfifo_out;
-
+	uint8_t rxfifo[RXFIFO_SZ];
+	int fifo_in, fifo_out;
+	int fifo_ovr;
 };
+
+static void update_rxintr(int pidx);
 
 static struct port port[2];
 static uint8_t reg_ipcr;
@@ -77,12 +97,25 @@ void duart_reset(void)
 		port[i].mode[0] = port[i].mode[1] = 0;
 		port[i].modeptr = 0;
 		port[i].tx = port[i].rx = 0;
-		port[i].rxfifo_in = port[i].rxfifo_out = 0;
+		port[i].fifo_in = port[i].fifo_out = 0;
+		port[i].fifo_ovr = 0;
 	}
 }
 
-void duart_serin(int port, int c)
+void duart_serin(int pidx, int c)
 {
+	struct port *p = port + pidx;
+
+	if(!p->rx) return;
+
+	p->rxfifo[p->fifo_in] = c;
+	p->fifo_in = RXFIFO_NEXT(p->fifo_in);
+	if(p->fifo_out == p->fifo_in) {
+		p->fifo_out = RXFIFO_NEXT(p->fifo_out);
+		p->fifo_ovr = 1;
+	}
+
+	update_rxintr(pidx);
 }
 
 static int tx_ready(int pidx)
@@ -92,12 +125,28 @@ static int tx_ready(int pidx)
 
 static int rx_ready(int pidx)
 {
-	return port[pidx].rxfifo_in != port[pidx].rxfifo_out;
+	return port[pidx].fifo_in != port[pidx].fifo_out;
 }
 
 static int rx_full(int pidx)
 {
-	return ((port[pidx].rxfifo_in + 1) & 3) == port[pidx].rxfifo_out;
+	return RXFIFO_NEXT(port[pidx].fifo_in) == port[pidx].fifo_out;
+}
+
+static void update_rxintr(int pidx)
+{
+	int have_intr;
+
+	if(port[pidx].mode[1] & MODE1_RXINT_FFULL) {
+		have_intr = rx_full(pidx);
+	} else {
+		have_intr = rx_ready(pidx);
+	}
+	if(have_intr) {
+		reg_istat |= pidx ? INTR_RXB : INTR_RXA;
+	} else {
+		reg_istat &= ~(pidx ? INTR_RXB : INTR_RXA);
+	}
 }
 
 static void command(int pidx, uint8_t data)
@@ -113,6 +162,10 @@ static void command(int pidx, uint8_t data)
 		port[pidx].modeptr = 0;
 		break;
 
+	case CMD_RST_ERR:
+		port[pidx].fifo_ovr = 0;
+		break;
+
 	default:
 		break;
 	}
@@ -122,8 +175,24 @@ uint8_t duart_read(int rs)
 {
 	uint8_t res;
 	int pidx = (rs >> 3) & 1;
+	struct port *p;
 
 	switch(rs) {
+	case REG_RBA_TBA:
+		p = port;
+		if(0) {
+	case REG_RBB_TBB:
+			p = port + 1;
+		}
+		res = p->rxfifo[p->fifo_out];
+		if(p->fifo_in == p->fifo_out) {
+			p->fifo_in = RXFIFO_NEXT(p->fifo_in);
+			/* XXX or should we just let the out run circles around in? test the hardware */
+		}
+		p->fifo_out = RXFIFO_NEXT(p->fifo_out);
+		update_rxintr(p - port);
+		return res;
+
 	case REG_SRA_CSRA:
 	case REG_SRB_CSRB:
 		res = STAT_TXEMPTY | STAT_TXRDY;
@@ -133,7 +202,13 @@ uint8_t duart_read(int rs)
 		if(rx_full(pidx)) {
 			res |= STAT_FFULL;
 		}
+		if(port[pidx].fifo_ovr) {
+			res |= STAT_ERR_OVR;
+		}
 		return res;
+
+	case REG_ISR_IMR:
+		return reg_istat;
 
 	default:
 		break;
@@ -165,5 +240,26 @@ void duart_write(int rs, uint8_t data)
 			emu_serout(pidx, data);
 		}
 		break;
+
+	case REG_IVR:
+		reg_ivec = data;
+		break;
+
+	case REG_ISR_IMR:
+		reg_imask = data;
+		break;
+
+	default:
+		break;
 	}
+}
+
+int duart_intr_pending(void)
+{
+	return reg_istat & reg_imask;
+}
+
+uint8_t duart_intr_ack(void)
+{
+	return reg_ivec;
 }

@@ -126,6 +126,7 @@ int main(int argc, char **argv)
 								cmdmode = 1;
 								opt_loginstr = 1;
 								term_cooked();
+								putchar('\n');
 								print_prompt();
 								break;
 							default:
@@ -164,6 +165,7 @@ void emu_break(void)
 		cmdmode = 1;
 		opt_loginstr = 1;
 		term_cooked();
+		putchar('\n');
 		print_prompt();
 	}
 }

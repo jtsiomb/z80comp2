@@ -8,6 +8,7 @@ void emu_cleanup(void);
 
 void emu_reset(void);
 void emu_step(void);
+uint8_t emu_intr_ack(void);
 
 uint8_t emu_mem_read(uint16_t addr);
 void emu_mem_write(uint16_t addr, uint8_t data);

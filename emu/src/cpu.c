@@ -112,6 +112,7 @@ static void op_load_reg16_reg16(int rdest, int rsrc);
 static void op_load_reg16_mem(int rdest, uint16_t addr);
 static void op_exch_mem_reg16(uint16_t addr, int rr);
 static void op_alu_reg8(int op, int r);
+static void op_alu_mem(int op, uint16_t addr);
 static void op_alu_imm8(int op, uint8_t imm);
 static void op_incdec_reg8(int r, int adj);
 static void op_incdec_reg16(int r, int adj);
@@ -135,6 +136,7 @@ static void op_output_incdec(int step, unsigned int mode);
 
 static struct registers regs;
 static int halt;
+static int prev_instr_ei;
 
 static void (*runop[16])(uint8_t op) = {
 	runop_main,		/* 0000: no prefix */
@@ -198,12 +200,6 @@ static uint16_t fetch_imm16(void)
 	return lsb | (msb << 8);
 }
 
-static uint16_t fetch_simm16(void)
-{
-	uint16_t val = fetch_imm16();
-	return *(int16_t*)&val;
-}
-
 static unsigned int prefix_bit(uint8_t op)
 {
 	switch(op) {
@@ -229,7 +225,11 @@ void cpu_step(void)
 		return;
 	}
 
+	prev_instr_ei = 0;
+
 	op = fetch_byte();
+	regs.r = (regs.r & 0x80) | ((regs.r + 1) & 0x7f);
+
 	if((pbit = prefix_bit(op))) {
 		prefix = pbit;
 		op = fetch_byte();
@@ -246,6 +246,35 @@ void cpu_step(void)
 	}
 
 	dbg_end_instr();
+}
+
+void cpu_intr(void)
+{
+	uint8_t data;
+	uint16_t addr;
+
+	if(!(regs.iff & 1)) return;
+
+	halt = 0;
+	regs.iff = 0;
+
+	switch(regs.imode) {
+	case 0:
+		data = emu_intr_ack();
+		runop_main(data);	/* TODO add support for multi-byte instructions */
+		break;
+
+	case 1:
+		op_call(0x38);
+		break;
+
+	case 2:
+		data = emu_intr_ack();
+		addr = (uint16_t)data | ((uint16_t)regs.i << 8);
+		addr = (uint16_t)emu_mem_read(addr) | ((uint16_t)emu_mem_read(addr + 1) << 8);
+		op_call(addr);
+		break;
+	}
 }
 
 struct registers *cpu_regs(void)
@@ -296,6 +325,11 @@ int cpu_get_named(const char *name)
 int cpu_get_halt(void)
 {
 	return halt;
+}
+
+int cpu_get_intr(void)
+{
+	return (regs.iff & 1) && !prev_instr_ei;
 }
 
 static int cond(int cc)
@@ -380,14 +414,14 @@ static void runop_main(uint8_t op)
 		op_load_reg16_imm16(OP_RR(op), val16);
 		break;
 	case 0x2a:
-		val16 = fetch_imm16();
-		dbg_log_instr("ld hl, $%x", (unsigned int)val16);
-		op_load_reg16_imm16(RR_HL, val16);
+		addr = fetch_imm16();
+		dbg_log_instr("ld hl, ($%x)", (unsigned int)addr);
+		op_load_reg16_mem(RR_HL, addr);
 		break;
 	case 0x22:
-		val16 = fetch_imm16();
-		dbg_log_instr("ld ($%x), hl", (unsigned int)val16);
-		op_store_mem_reg16(val16, RR_HL);
+		addr = fetch_imm16();
+		dbg_log_instr("ld ($%x), hl", (unsigned int)addr);
+		op_store_mem_reg16(addr, RR_HL);
 		break;
 	case 0xf9:
 		dbg_log_instr("ld sp, hl");
@@ -458,6 +492,7 @@ static void runop_main(uint8_t op)
 	case 0xfb:	/* ei */
 		dbg_log_instr("ei");
 		regs.iff = 3;
+		prev_instr_ei = 1;
 		break;
 
 		/* 16-bit arithmetic group */
@@ -602,7 +637,10 @@ static void runop_main(uint8_t op)
 			break;
 
 		case 2:
-			if(SRC_R(op) != 6) {
+			if(SRC_R(op) == 6) {
+				dbg_log_instr("%s (hl)", aluopstr[ALUOP(op)]);
+				op_alu_mem(ALUOP(op), regs.g.rr.hl);
+			} else {
 				dbg_log_instr("%s %s", aluopstr[ALUOP(op)], r8str[SRC_R(op)]);
 				op_alu_reg8(ALUOP(op), SRC_R(op));
 			}
@@ -1136,6 +1174,11 @@ static void op_alu_reg8(int op, int r)
 	op_alu_imm8(op, get_reg8(r));
 }
 
+static void op_alu_mem(int op, uint16_t addr)
+{
+	op_alu_imm8(op, emu_mem_read(addr));
+}
+
 static void op_alu_imm8(int op, uint8_t imm)
 {
 	int c, h, pv, n = 0;
@@ -1308,7 +1351,7 @@ static void op_ret(void)
 
 static void op_input(int r, uint16_t addr)
 {
-	uint8_t val = emu_io_read(regs.g.rr.bc);
+	uint8_t val = emu_io_read(addr);
 	if(r != 6) set_reg8(r, val);
 
 	set_flag(FLAGS_S, val & 0x80);
