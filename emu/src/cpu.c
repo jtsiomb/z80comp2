@@ -1,3 +1,4 @@
+#include <string.h>
 #include <stdint.h>
 #include "cpu.h"
 #include "emu.h"
@@ -14,7 +15,7 @@ enum {
 	R_A	= 7
 };
 
-static const char *r8str[] = {"b", "c", "d", "e", "h", "l", "(hl)", "a"};
+static const char *r8str[] = {"b", "c", "d", "e", "h", "l", "(hl)", "a", 0};
 
 #define RRSET2	4
 enum {
@@ -29,7 +30,7 @@ enum {
 	RR2_AF = RRSET2 | RR_SP
 };
 
-static const char *r16str[] = {"bc", "de", "hl", "sp", "bc", "de", "hl", "af"};
+static const char *r16str[] = {"bc", "de", "hl", "sp", "bc", "de", "hl", "af", 0};
 
 enum {
 	PREFIX_ED	= 1,
@@ -227,6 +228,46 @@ void cpu_step(void)
 struct registers *cpu_regs(void)
 {
 	return &regs;
+}
+
+int cpu_set_named(const char *name, unsigned int val)
+{
+	int i;
+
+	for(i=0; r8str[i]; i++) {
+		if(strcmp(name, r8str[i]) == 0) {
+			set_reg8(i, val);
+			return 0;
+		}
+	}
+
+	for(i=0; r16str[i]; i++) {
+		if(strcmp(name, r16str[i]) == 0) {
+			set_reg16(i, val);
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
+int cpu_get_named(const char *name)
+{
+	int i;
+
+	for(i=0; r8str[i]; i++) {
+		if(strcmp(name, r8str[i]) == 0) {
+			return get_reg8(i);
+		}
+	}
+
+	for(i=0; r16str[i]; i++) {
+		if(strcmp(name, r16str[i]) == 0) {
+			return get_reg16(i);
+		}
+	}
+
+	return -1;
 }
 
 static int cond(int cc)

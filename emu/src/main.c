@@ -157,12 +157,13 @@ void emu_serout(int port, int c)
 
 static int cmd_input(char *line)
 {
-	int i, line_len, argc = 0;
+	int i, line_len, count, argc = 0;
 	char *argv[128];
 	static char last_line[4096];
 	static char *last_argv[128];
 	static int last_argc;
 	struct registers *regs;
+	uint16_t addr;
 
 	line_len = strlen(line);
 	while(argc < 128 && (argv[argc] = strtok(argc ? 0 : line, " \t\n\r"))) {
@@ -202,8 +203,34 @@ static int cmd_input(char *line)
 		printf("iff: %02x imode: %d\n", (unsigned int)regs->iff, (int)regs->imode);
 		break;
 
+	case 'x':
+		if(argv[0][1] == '/') {
+			if((count = atoi(argv[0] + 2)) <= 0) {
+				fprintf(stderr, "invalid byte count: %d\n", count);
+				break;
+			}
+		} else {
+			count = 1;
+		}
+		if(argc > 1) {
+			char *endp;
+			addr = strtol(argv[1], &endp, 0);
+			if(endp == argv[1]) {
+				int val = cpu_get_named(argv[1]);
+				if(val < 0) {
+					fprintf(stderr, "invalid address: %s\n", argv[1]);
+					break;
+				}
+				addr = val;
+			}
+		} else {
+			addr = cpu_regs()->pc;
+		}
+		dbg_mem_dump(addr, count);
+		break;
+
 	default:
-		printf("unrecognized command: %s\n", argv[0]);
+		fprintf(stderr, "unrecognized command: %s\n", argv[0]);
 		break;
 	}
 

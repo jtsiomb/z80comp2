@@ -10,4 +10,6 @@ void dbg_log_file(FILE *fp);
 void dbg_log_pc(uint16_t pc);
 void dbg_log_instr(const char *fmt, ...);
 
+void dbg_mem_dump(uint16_t addr, int n);
+
 #endif	/* DBG_H_ */
