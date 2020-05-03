@@ -17,6 +17,6 @@ void emu_io_write(uint16_t addr, uint8_t data);
 void emu_serin(int port, int c);
 void emu_serout(int port, int c);	/* implemented by the backend */
 
-void emu_breakpt(void);	/* implemented by the backend */
+void emu_break(void);	/* implemented by the backend */
 
 #endif	/* EMU_H_ */

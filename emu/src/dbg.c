@@ -22,6 +22,7 @@ int dbg_begin_instr(uint16_t pc)
 	cur_addr = pc;
 
 	if(brk[pc] == 1) {
+		printf("breakpoint hit (%04x)\n", pc);
 		brk[pc]++;
 		return -1;
 	}

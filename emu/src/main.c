@@ -139,6 +139,9 @@ int main(int argc, char **argv)
 
 		if(!cmdmode) {
 			emu_step();
+			if(cpu_get_halt() && !cpu_regs()->iff) {
+				emu_break();
+			}
 			sched_yield();
 		}
 	}
@@ -155,13 +158,12 @@ void emu_serout(int port, int c)
 	write(ttyfd, &c, 1);
 }
 
-void emu_breakpt(void)
+void emu_break(void)
 {
 	if(!cmdmode) {
 		cmdmode = 1;
 		opt_loginstr = 1;
 		term_cooked();
-		printf("breakpoint hit (%04x)\n", (unsigned int)cpu_regs()->pc);
 		print_prompt();
 	}
 }
@@ -195,6 +197,7 @@ static int cmd_input(char *line)
 
 	case 'c':
 		cmdmode = 0;
+		opt_loginstr = 0;
 		term_raw();
 		break;
 
@@ -204,15 +207,37 @@ static int cmd_input(char *line)
 
 	case 'r':
 		regs = cpu_regs();
-		printf("af: %02x %02x [", (unsigned int)regs->g.r.a, (unsigned int)regs->g.r.f);
-		print_flags();
-		printf("]\n");
-		printf("bc: %02x %02x\n", (unsigned int)regs->g.r.b, (unsigned int)regs->g.r.c);
-		printf("de: %02x %02x\n", (unsigned int)regs->g.r.d, (unsigned int)regs->g.r.e);
-		printf("hl: %02x %02x\n", (unsigned int)regs->g.r.h, (unsigned int)regs->g.r.l);
-		printf("ix: %04x iy: %04x\n", (unsigned int)regs->ix, (unsigned int)regs->iy);
-		printf("sp: %04x pc: %04x\n", (unsigned int)regs->sp, (unsigned int)regs->pc);
-		printf("iff: %02x imode: %d\n", (unsigned int)regs->iff, (int)regs->imode);
+		if(argc > 1) {
+			if(argc > 2) {
+				int val = strtol(argv[2], &endp, 0);
+				if(endp == argv[2]) {
+					fprintf(stderr, "invalid register value: %s\n", argv[2]);
+					break;
+				}
+				if(cpu_set_named(argv[1], *(unsigned int*)&val) == -1) {
+					fprintf(stderr, "invalid register: %s\n", argv[1]);
+					break;
+				}
+				printf("set register %s = %04x\n", argv[1], *(unsigned int*)&val);
+			} else {
+				int val = cpu_get_named(argv[1]);
+				if(val < 0) {
+					fprintf(stderr, "invalid register: %s\n", argv[1]);
+					break;
+				}
+				printf("%s: %04x\n", argv[1], (unsigned int)val);
+			}
+		} else {
+			printf("af: %02x %02x [", (unsigned int)regs->g.r.a, (unsigned int)regs->g.r.f);
+			print_flags();
+			printf("]\n");
+			printf("bc: %02x %02x\n", (unsigned int)regs->g.r.b, (unsigned int)regs->g.r.c);
+			printf("de: %02x %02x\n", (unsigned int)regs->g.r.d, (unsigned int)regs->g.r.e);
+			printf("hl: %02x %02x\n", (unsigned int)regs->g.r.h, (unsigned int)regs->g.r.l);
+			printf("ix: %04x iy: %04x\n", (unsigned int)regs->ix, (unsigned int)regs->iy);
+			printf("sp: %04x pc: %04x\n", (unsigned int)regs->sp, (unsigned int)regs->pc);
+			printf("iff: %02x imode: %d\n", (unsigned int)regs->iff, (int)regs->imode);
+		}
 		break;
 
 	case 'x':

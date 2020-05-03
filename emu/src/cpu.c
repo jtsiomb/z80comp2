@@ -207,7 +207,7 @@ void cpu_step(void)
 	if(halt) return;
 
 	if(dbg_begin_instr(regs.pc) == -1) {
-		emu_breakpt();
+		emu_break();
 		return;
 	}
 
@@ -273,6 +273,11 @@ int cpu_get_named(const char *name)
 	}
 
 	return -1;
+}
+
+int cpu_get_halt(void)
+{
+	return halt;
 }
 
 static int cond(int cc)

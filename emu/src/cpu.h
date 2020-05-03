@@ -33,6 +33,7 @@ void cpu_reset(void);
 void cpu_step(void);
 void cpu_breakpt(void);
 struct registers *cpu_regs(void);
+int cpu_get_halt(void);
 
 int cpu_set_named(const char *name, unsigned int val);
 int cpu_get_named(const char *name);
