@@ -74,6 +74,11 @@ enum {
 	SR_ROT_NOCARRY	= 8
 };
 
+enum {
+	LDI_ONCE	= 0,
+	LDI_REP		= 1
+};
+
 static void runop_main(uint8_t op);
 static void runop_ed(uint8_t op);
 static void runop_cb(uint8_t op);
@@ -91,6 +96,10 @@ static void set_reg16s(int r, int16_t val);
 static uint16_t get_reg16(int r);
 static int16_t get_reg16s(int r);
 static void set_flag(unsigned int flag, int val);
+static int parity(int x);
+static int overflow(int x);
+static int overflow16(int x);
+
 
 static void op_load_reg8_reg8(int rdest, int rsrc);
 static void op_load_reg8_imm8(int rdest, uint8_t imm);
@@ -100,6 +109,7 @@ static void op_store_mem_imm8(uint16_t addr, uint8_t imm);
 static void op_store_mem_reg16(uint16_t addr, int rsrc);
 static void op_load_reg16_imm16(int rdest, uint16_t imm);
 static void op_load_reg16_reg16(int rdest, int rsrc);
+static void op_load_reg16_mem(int rdest, uint16_t addr);
 static void op_exch_mem_reg16(uint16_t addr, int rr);
 static void op_alu_reg8(int op, int r);
 static void op_alu_imm8(int op, uint8_t imm);
@@ -107,6 +117,7 @@ static void op_incdec_reg8(int r, int adj);
 static void op_incdec_reg16(int r, int adj);
 static void op_incdec_mem(uint16_t addr, int adj);
 static void op_add_reg16_reg16(int rdest, int rsrc);
+static void op_adc_sbc_reg16_reg16(int rdest, int rsrc, int sub);
 static void op_push_reg16(int r);
 static void op_pop_reg16(int r);
 static void op_call(uint16_t addr);
@@ -116,6 +127,11 @@ static void op_output(uint16_t addr, int r);
 
 static uint8_t sr_left(uint8_t x, unsigned int mode);
 static uint8_t sr_right(uint8_t x, unsigned int mode);
+
+static void op_load_incdec(int step, unsigned int mode);
+static void op_cmp_incdec(int step, unsigned int mode);
+static void op_input_incdec(int step, unsigned int mode);
+static void op_output_incdec(int step, unsigned int mode);
 
 static struct registers regs;
 static int halt;
@@ -135,11 +151,13 @@ static void (*runop[16])(uint8_t op) = {
 	0, 0, 0, 0, 0	/* all the rest combinations are invalid */
 };
 
+static uint8_t zero8;
+
 static uint8_t *regptr8[8] = {
 	&regs.g.r.b, &regs.g.r.c,
 	&regs.g.r.d, &regs.g.r.e,
 	&regs.g.r.h, &regs.g.r.l,
-	0, &regs.g.r.a
+	&zero8, &regs.g.r.a
 };
 
 static uint16_t *regptr16[] = {
@@ -315,7 +333,7 @@ static void runop_main(uint8_t op)
 {
 	int b67 = op >> 6;
 	int8_t disp;
-	uint8_t val8;
+	uint8_t val8, prev_f;
 	uint16_t val16, addr;
 
 	switch(op) {
@@ -439,7 +457,7 @@ static void runop_main(uint8_t op)
 		break;
 	case 0xfb:	/* ei */
 		dbg_log_instr("ei");
-		regs.iff = 1;
+		regs.iff = 3;
 		break;
 
 		/* 16-bit arithmetic group */
@@ -538,7 +556,9 @@ static void runop_main(uint8_t op)
 	case 0xdb:
 		val8 = fetch_byte();
 		dbg_log_instr("in a, ($%x)", (unsigned int)val8);
+		prev_f = regs.g.r.f;	/* preserve flags */
 		op_input(R_A, ((uint16_t)regs.g.r.a << 8) | val8);
+		regs.g.r.f = prev_f;
 		break;
 	case 0xd3:
 		val8 = fetch_byte();
@@ -626,6 +646,225 @@ static void runop_main(uint8_t op)
 
 static void runop_ed(uint8_t op)
 {
+	int b67 = op >> 6;
+	int b012 = op & 7;
+	int b345 = (op >> 3) & 7;
+	uint16_t addr;
+	int8_t s8;
+	uint8_t byte;
+
+	switch(op) {
+		/* 8-bit load group */
+	case 0x57:	/* ld a, i */
+		dbg_log_instr("ld a, i");
+		regs.g.r.a = regs.i;
+		if(0) {
+	case 0x5f:	/* ld a, r */
+			dbg_log_instr("ld a, r");
+			regs.g.r.a = regs.r;
+		}
+		set_flag(FLAGS_S, regs.g.r.a & 0x80);
+		set_flag(FLAGS_Z, regs.g.r.a == 0);
+		set_flag(FLAGS_H, 0);
+		set_flag(FLAGS_PV, regs.iff & 2);
+		set_flag(FLAGS_N, 0);
+		break;
+	case 0x47:	/* ld i, a */
+		dbg_log_instr("ld i, a");
+		regs.i = regs.g.r.a;
+		break;
+	case 0x4f:	/* ld r, a */
+		dbg_log_instr("ld, r, a");
+		regs.r = regs.g.r.a;
+		break;
+
+		/* 16-bit load group */
+	case 0x4b:	/* ld r16, (imm16) */
+	case 0x5b:
+	case 0x6b:
+	case 0x7b:
+		addr = fetch_imm16();
+		dbg_log_instr("ld %s, ($%04x)", r16str[OP_RR(op)], (unsigned int)addr);
+		op_load_reg16_mem(OP_RR(op), addr);
+		break;
+	case 0x43:	/* ld (imm16), r16 */
+	case 0x53:
+	case 0x63:
+	case 0x73:
+		addr = fetch_imm16();
+		dbg_log_instr("ld ($%04x), %s", (unsigned int)addr, r16str[OP_RR(op)]);
+		op_store_mem_reg16(addr, OP_RR(op));
+		break;
+
+		/* exchange, block transfer, block search groups */
+	case 0xa0:	/* ldi */
+		dbg_log_instr("ldi");
+		op_load_incdec(1, LDI_ONCE);
+		break;
+	case 0xb0:	/* ldir */
+		dbg_log_instr("ldir");
+		op_load_incdec(1, LDI_REP);
+		break;
+	case 0xa8:	/* ldd */
+		dbg_log_instr("ldd");
+		op_load_incdec(-1, LDI_ONCE);
+		break;
+	case 0xb8:	/* lddr */
+		dbg_log_instr("lddr");
+		op_load_incdec(-1, LDI_REP);
+		break;
+	case 0xa1:	/* cpi */
+		dbg_log_instr("cpi");
+		op_cmp_incdec(1, LDI_ONCE);
+		break;
+	case 0xb1:	/* cpir */
+		dbg_log_instr("cpir");
+		op_cmp_incdec(1, LDI_REP);
+		break;
+	case 0xa9:	/* cpd */
+		dbg_log_instr("cpd");
+		op_cmp_incdec(-1, LDI_ONCE);
+		break;
+	case 0xb9:	/* cpdr */
+		dbg_log_instr("cpdr");
+		op_cmp_incdec(-1, LDI_REP);
+		break;
+
+		/* general-purpose arithmetic and cpu control groups */
+	case 0x44:	/* neg */
+	case 0x54:
+	case 0x64:
+	case 0x74:
+	case 0x4c:
+	case 0x5c:
+	case 0x6c:
+	case 0x7c:
+		dbg_log_instr("neg");
+		s8 = get_reg8s(R_A);
+		set_reg8(R_A, -s8);
+		set_flag(FLAGS_S, regs.g.r.a & 0x80);
+		set_flag(FLAGS_Z, regs.g.r.a == 0);
+		set_flag(FLAGS_H, (-s8 & 0xf) & 0x10);
+		set_flag(FLAGS_PV, s8 == 0x80);
+		set_flag(FLAGS_C, s8 != 0);
+		break;
+	case 0x46:	/* im 0 */
+	case 0x66:
+	case 0x4e:
+	case 0x6e:
+		dbg_log_instr("im 0");
+		regs.imode = 0;
+		break;
+	case 0x56:	/* im 1 */
+	case 0x76:
+		dbg_log_instr("im 1");
+		regs.imode = 1;
+		break;
+	case 0x5e:	/* im 2 */
+	case 0x7e:
+		dbg_log_instr("im 2");
+		regs.imode = 2;
+		break;
+
+		/* 16-bit arithmetic group */
+	case 0x4a:	/* adc hl, reg16 */
+	case 0x5a:
+	case 0x6a:
+	case 0x7a:
+		dbg_log_instr("adc hl, %s", r16str[OP_RR(op)]);
+		op_adc_sbc_reg16_reg16(RR_HL, OP_RR(op), 0);
+		break;
+	case 0x42:	/* sbc hl, reg16 */
+	case 0x52:
+	case 0x62:
+	case 0x72:
+		dbg_log_instr("sbc hl, %s", r16str[OP_RR(op)]);
+		op_adc_sbc_reg16_reg16(RR_HL, OP_RR(op), -1);
+		break;
+
+		/* shift and rotate group */
+	case 0x6f:	/* rld */
+		dbg_log_instr("rld");
+		byte = emu_mem_read(regs.g.rr.hl);
+		emu_mem_write(regs.g.rr.hl, (byte << 4) | (regs.g.r.a & 0xf));
+		regs.g.r.a = (regs.g.r.a & 0xf0) | (byte >> 4);
+		set_flag(FLAGS_S, regs.g.r.a & 0x80);
+		set_flag(FLAGS_Z, regs.g.r.a == 0);
+		set_flag(FLAGS_H, 0);
+		set_flag(FLAGS_PV, parity(regs.g.r.a));
+		set_flag(FLAGS_N, 0);
+		break;
+	case 0x67:	/* rrd */
+		dbg_log_instr("rrd");
+		byte = emu_mem_read(regs.g.rr.hl);
+		emu_mem_write(regs.g.rr.hl, (byte >> 4) | (regs.g.r.a << 4));
+		regs.g.r.a = (regs.g.r.a & 0xf0) | (byte & 0xf);
+		set_flag(FLAGS_S, regs.g.r.a & 0x80);
+		set_flag(FLAGS_Z, regs.g.r.a  == 0);
+		set_flag(FLAGS_H, 0);
+		set_flag(FLAGS_PV, parity(regs.g.r.a));
+		set_flag(FLAGS_N, 0);
+		break;
+
+		/* call and return group */
+	case 0x4d:	/* reti */
+		dbg_log_instr("reti");
+		op_ret();
+		break;
+	case 0x45:	/* retn */
+		dbg_log_instr("retn");
+		op_ret();
+		regs.iff = (regs.iff & 0xfe) | ((regs.iff & 2) >> 1);
+		break;
+
+		/* input and output group */
+	case 0xa2:	/* ini */
+		dbg_log_instr("ini");
+		op_input_incdec(1, LDI_ONCE);
+		break;
+	case 0xb2:	/* inir */
+		dbg_log_instr("inir");
+		op_input_incdec(1, LDI_REP);
+		break;
+	case 0xaa:	/* ind */
+		dbg_log_instr("ind");
+		op_input_incdec(-1, LDI_ONCE);
+		break;
+	case 0xba:	/* indr */
+		dbg_log_instr("indr");
+		op_input_incdec(-1, LDI_REP);
+		break;
+	case 0xa3:	/* outi */
+		dbg_log_instr("outi");
+		op_output_incdec(1, LDI_ONCE);
+		break;
+	case 0xb3:	/* otir */
+		dbg_log_instr("otir");
+		op_output_incdec(1, LDI_REP);
+		break;
+	case 0xab:	/* outd */
+		dbg_log_instr("outd");
+		op_output_incdec(-1, LDI_ONCE);
+		break;
+	case 0xbb:	/* otdr */
+		dbg_log_instr("otdr");
+		op_output_incdec(-1, LDI_REP);
+		break;
+
+	default:
+		if(b67 == 1) {
+			if(b012 == 0) {
+				/* in r, (c) */
+				dbg_log_instr("in %s, (c)", b345 == 6 ? "?" : r8str[b345]);
+				op_input(b345, regs.g.rr.bc);
+			} else if(b012 == 1) {
+				/* out (c), r */
+				dbg_log_instr("out (c), %s", b345 == 6 ? "0" : r8str[b345]);
+				op_output(regs.g.rr.bc, b345);
+			}
+		}
+		break;
+	}
 }
 
 static void runop_cb(uint8_t op)
@@ -856,13 +1095,6 @@ static void op_store_mem_imm8(uint16_t addr, uint8_t imm)
 	emu_mem_write(addr, imm);
 }
 
-static void op_store_mem_reg16(uint16_t addr, int rsrc)
-{
-	uint16_t val = get_reg16(rsrc);
-	emu_mem_write(addr, val);
-	emu_mem_write(addr + 1, val >> 8);
-}
-
 static void op_load_reg16_imm16(int rdest, uint16_t imm)
 {
 	set_reg16(rdest, imm);
@@ -871,6 +1103,20 @@ static void op_load_reg16_imm16(int rdest, uint16_t imm)
 static void op_load_reg16_reg16(int rdest, int rsrc)
 {
 	set_reg16(rdest, get_reg16(rsrc));
+}
+
+static void op_load_reg16_mem(int rdest, uint16_t addr)
+{
+	uint16_t lsb = emu_mem_read(addr);
+	uint16_t msb = emu_mem_read(addr + 1);
+	set_reg16(rdest, lsb | (msb << 8));
+}
+
+static void op_store_mem_reg16(uint16_t addr, int rsrc)
+{
+	uint16_t val = get_reg16(rsrc);
+	emu_mem_write(addr, val);
+	emu_mem_write(addr + 1, val >> 8);
 }
 
 static void op_exch_mem_reg16(uint16_t addr, int rr)
@@ -1008,6 +1254,24 @@ static void op_add_reg16_reg16(int rdest, int rsrc)
 	set_flag(FLAGS_N, 0);
 }
 
+static void op_adc_sbc_reg16_reg16(int rdest, int rsrc, int sub)
+{
+	int a = get_reg16s(rdest);
+	int b = get_reg16s(rsrc) + CARRY;
+	int res;
+
+	if(sub) b = -b;
+	res = a + b;
+	set_reg16s(rdest, res);
+
+	set_flag(FLAGS_S, res < 0);
+	set_flag(FLAGS_Z, res == 0);
+	set_flag(FLAGS_H, ((a & 0xfff) + (b & 0xfff)) & 0x1000);
+	set_flag(FLAGS_PV, overflow16(res));
+	set_flag(FLAGS_N, 0);
+	set_flag(FLAGS_C, res & 0x10000);
+}
+
 static void push(uint16_t val)
 {
 	emu_mem_write(--regs.sp, val >> 8);
@@ -1044,7 +1308,14 @@ static void op_ret(void)
 
 static void op_input(int r, uint16_t addr)
 {
-	set_reg8(r, emu_io_read(addr));
+	uint8_t val = emu_io_read(regs.g.rr.bc);
+	if(r != 6) set_reg8(r, val);
+
+	set_flag(FLAGS_S, val & 0x80);
+	set_flag(FLAGS_Z, val == 0);
+	set_flag(FLAGS_H, 0);
+	set_flag(FLAGS_PV, parity(val));
+	set_flag(FLAGS_N, 0);
 }
 
 static void op_output(uint16_t addr, int r)
@@ -1091,4 +1362,68 @@ static uint8_t sr_right(uint8_t x, unsigned int mode)
 		set_flag(FLAGS_PV, parity(x));
 	}
 	return x;
+}
+
+static void op_load_incdec(int step, unsigned int mode)
+{
+	emu_mem_write(regs.g.rr.de, emu_mem_read(regs.g.rr.hl));
+	regs.g.rr.de += step;
+	regs.g.rr.hl += step;
+
+	if(--regs.g.rr.bc && mode & LDI_REP) {
+		regs.pc -= 2;	/* repeat instruction */
+	}
+
+	set_flag(FLAGS_PV, mode & LDI_REP ? 0 : regs.g.rr.bc);
+	set_flag(FLAGS_H, 0);
+	set_flag(FLAGS_N, 0);
+}
+
+static void op_cmp_incdec(int step, unsigned int mode)
+{
+	int acc = get_reg8s(R_A);
+	uint8_t byte = emu_mem_read(regs.g.rr.hl);
+	int val = -*(int8_t*)&byte;
+
+	regs.g.rr.hl += step;
+
+	if(--regs.g.rr.bc && acc + val != 0 && mode & LDI_REP) {
+		regs.pc -= 2;	/* repeat instruction */
+	}
+
+	set_flag(FLAGS_S, acc + val < 0);
+	set_flag(FLAGS_Z, acc + val == 0);
+	set_flag(FLAGS_H, ((acc & 0xf) + (val + 0xf)) & 0x10);
+	set_flag(FLAGS_PV, regs.g.rr.bc);
+	set_flag(FLAGS_N, 1);
+}
+
+static void op_input_incdec(int step, unsigned int mode)
+{
+	uint8_t byte = emu_io_read(regs.g.rr.bc);
+	emu_mem_write(regs.g.rr.hl, byte);
+
+	regs.g.rr.hl += step;
+
+	if(--regs.g.r.b && mode & LDI_REP) {
+		regs.pc -= 2;	/* repeat instruction */
+	}
+
+	set_flag(FLAGS_Z, regs.g.r.b == 0);
+	set_flag(FLAGS_N, 1);
+}
+
+static void op_output_incdec(int step, unsigned int mode)
+{
+	uint8_t byte = emu_mem_read(regs.g.rr.hl);
+	emu_io_write(regs.g.rr.bc, byte);
+
+	regs.g.rr.hl += step;
+
+	if(--regs.g.r.b && mode & LDI_REP) {
+		regs.pc -= 2;	/* repeat instruction */
+	}
+
+	set_flag(FLAGS_Z, regs.g.r.b == 0);
+	set_flag(FLAGS_N, 1);
 }
