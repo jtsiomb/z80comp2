@@ -155,6 +155,17 @@ void emu_serout(int port, int c)
 	write(ttyfd, &c, 1);
 }
 
+void emu_breakpt(void)
+{
+	if(!cmdmode) {
+		cmdmode = 1;
+		opt_loginstr = 1;
+		term_cooked();
+		printf("breakpoint hit (%04x)\n", (unsigned int)cpu_regs()->pc);
+		print_prompt();
+	}
+}
+
 static int cmd_input(char *line)
 {
 	int i, line_len, count, argc = 0;
@@ -164,6 +175,7 @@ static int cmd_input(char *line)
 	static int last_argc;
 	struct registers *regs;
 	uint16_t addr;
+	char *endp;
 
 	line_len = strlen(line);
 	while(argc < 128 && (argv[argc] = strtok(argc ? 0 : line, " \t\n\r"))) {
@@ -213,7 +225,6 @@ static int cmd_input(char *line)
 			count = 1;
 		}
 		if(argc > 1) {
-			char *endp;
 			addr = strtol(argv[1], &endp, 0);
 			if(endp == argv[1]) {
 				int val = cpu_get_named(argv[1]);
@@ -227,6 +238,29 @@ static int cmd_input(char *line)
 			addr = cpu_regs()->pc;
 		}
 		dbg_mem_dump(addr, count);
+		break;
+
+	case 'b':
+	case 'd':
+		if(argc > 1) {
+			addr = strtol(argv[1], &endp, 0);
+			if(endp == argv[1]) {
+				fprintf(stderr, "invalid address: %s\n", argv[1]);
+				break;
+			}
+		} else {
+			addr = cpu_regs()->pc;
+		}
+		if(argv[0][0] == 'b') {
+			dbg_setbpt(addr);
+			printf("added breakpoint at %04x\n", (unsigned int)addr);
+		} else {
+			if(dbg_delbpt(addr) == -1) {
+				fprintf(stderr, "there is no breakpoint at %04x\n", (unsigned int)addr);
+			} else {
+				printf("removed breakpoint from %04x\n", (unsigned int)addr);
+			}
+		}
 		break;
 
 	default:

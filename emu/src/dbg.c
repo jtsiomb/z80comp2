@@ -10,14 +10,29 @@ int opt_loginstr;
 static uint16_t cur_addr;
 static FILE *out;
 
+static uint8_t brk[65536];
+
 void dbg_log_file(FILE *fp)
 {
 	out = fp;
 }
 
-void dbg_log_pc(uint16_t pc)
+int dbg_begin_instr(uint16_t pc)
 {
 	cur_addr = pc;
+
+	if(brk[pc] == 1) {
+		brk[pc]++;
+		return -1;
+	}
+	return 0;
+}
+
+void dbg_end_instr(void)
+{
+	if(brk[cur_addr] == 2) {
+		brk[cur_addr]--;
+	}
 }
 
 void dbg_log_instr(const char *fmt, ...)
@@ -61,4 +76,16 @@ void dbg_mem_dump(uint16_t addr, int n)
 		n -= ROW_BYTES;
 		addr += ROW_BYTES;
 	}
+}
+
+void dbg_setbpt(uint16_t addr)
+{
+	brk[addr] = 1;
+}
+
+int dbg_delbpt(uint16_t addr)
+{
+	if(!brk[addr]) return -1;
+	brk[addr] = 0;
+	return 0;
 }

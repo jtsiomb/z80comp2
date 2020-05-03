@@ -206,7 +206,10 @@ void cpu_step(void)
 
 	if(halt) return;
 
-	dbg_log_pc(regs.pc);
+	if(dbg_begin_instr(regs.pc) == -1) {
+		emu_breakpt();
+		return;
+	}
 
 	op = fetch_byte();
 	if((pbit = prefix_bit(op))) {
@@ -223,6 +226,8 @@ void cpu_step(void)
 	if(runop[prefix]) {
 		runop[prefix](op);
 	}
+
+	dbg_end_instr();
 }
 
 struct registers *cpu_regs(void)
