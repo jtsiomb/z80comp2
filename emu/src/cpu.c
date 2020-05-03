@@ -4,15 +4,6 @@
 #include "dbg.h"
 
 enum {
-	FLAGS_C		= 0x01,
-	FLAGS_N		= 0x02,
-	FLAGS_PV	= 0x04,
-	FLAGS_H		= 0x10,
-	FLAGS_Z		= 0x40,
-	FLAGS_S		= 0x80
-};
-
-enum {
 	R_B	= 0,
 	R_C	= 1,
 	R_D	= 2,
@@ -80,25 +71,6 @@ enum {
 	SR_SETFL		= 2,
 	SR_ROT_CARRY	= 4,
 	SR_ROT_NOCARRY	= 8
-};
-
-struct regs8 {
-	uint8_t a, f, b, c, d, e, h, l;
-};
-struct regs16 {
-	uint16_t af, bc, de, hl;
-};
-
-union genregs {
-	struct regs8 r;
-	struct regs16 rr;
-};
-
-struct registers {
-	union genregs g, shadow;	/* general purpose and shadow registers */
-	uint8_t i, r;
-	uint16_t ix, iy, sp, pc;
-	uint8_t iff, imode;
 };
 
 static void runop_main(uint8_t op);
@@ -233,6 +205,8 @@ void cpu_step(void)
 
 	if(halt) return;
 
+	dbg_log_pc(regs.pc);
+
 	op = fetch_byte();
 	if((pbit = prefix_bit(op))) {
 		prefix = pbit;
@@ -248,6 +222,11 @@ void cpu_step(void)
 	if(runop[prefix]) {
 		runop[prefix](op);
 	}
+}
+
+struct registers *cpu_regs(void)
+{
+	return &regs;
 }
 
 static int cond(int cc)

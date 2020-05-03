@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
@@ -11,8 +12,14 @@
 #include <sys/select.h>
 #include <sys/mman.h>
 #include "emu.h"
+#include "cpu.h"
 #include "dbg.h"
 
+static int cmd_input(char *line);
+static void print_prompt(void);
+static void print_flags(void);
+static int term_raw(void);
+static int term_cooked(void);
 static void sighandler(int s);
 static int parse_args(int argc, char **argv);
 
@@ -20,8 +27,11 @@ static const char *rom_fname = "rom";
 static const char *termdev = "/dev/tty";
 
 static int ttyfd;
+static FILE *ttyfile;
 static struct termios saved_term;
 static volatile int quit;
+
+static int cmdmode;
 
 int main(int argc, char **argv)
 {
@@ -56,13 +66,15 @@ int main(int argc, char **argv)
 		return -1;
 	}
 	saved_term = term;
-	term.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-	term.c_oflag &= ~OPOST;
-	term.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-	term.c_cflag = (term.c_cflag & ~(CSIZE | PARENB)) | CS8;
-	term.c_cc[VMIN] = 0;
-	term.c_cc[VTIME] = 1;
-	tcsetattr(ttyfd, TCSAFLUSH, &term);
+	if(!cmdmode) {
+		term_raw();
+	} else {
+		opt_loginstr = 1;
+		print_prompt();
+	}
+
+	ttyfile = fdopen(ttyfd, "w");
+	dbg_log_file(ttyfile);
 
 	if(emu_init(rom, st.st_size) == -1) {
 		return 1;
@@ -80,26 +92,57 @@ int main(int argc, char **argv)
 
 		maxfd = ttyfd;
 
-		res = select(maxfd + 1, &rdset, 0, 0, &tv);
+		res = select(maxfd + 1, &rdset, 0, 0, cmdmode ? 0 : &tv);
 		if(quit) break;
 
 		if(res > 0) {
 			if(FD_ISSET(ttyfd, &rdset)) {
 				int i, rd;
-				char buf[256];
+				static char buf[4096];
 
-				while((rd = read(ttyfd, buf, sizeof buf)) > 0) {
-					for(i=0; i<rd; i++) {
-						emu_serin(0, buf[i]);
+				while((rd = read(ttyfd, buf, sizeof buf - 1)) > 0) {
+					if(cmdmode) {
+						char *line, *ptr;
+						line = ptr = buf;
+						while(ptr - buf < rd) {
+							if(*ptr == '\n') {
+								*ptr = 0;
+								cmd_input(line);
+								if(quit) goto end;
+								if(!cmdmode) break;
+								line = ptr + 1;
+								print_prompt();
+							}
+							ptr++;
+						}
+					} else {
+						for(i=0; i<rd; i++) {
+							int c = buf[i];
+
+							switch(c) {
+							case 4:
+								goto end;
+							case 3:
+								cmdmode = 1;
+								opt_loginstr = 1;
+								term_cooked();
+								print_prompt();
+								break;
+							default:
+								emu_serin(0, buf[i]);
+							}
+						}
 					}
 				}
-				if(!rd) break;	/* EOF */
 			}
 		}
 
-		emu_step();
-		sched_yield();
+		if(!cmdmode) {
+			emu_step();
+			sched_yield();
+		}
 	}
+end:
 
 	emu_cleanup();
 
@@ -112,9 +155,152 @@ void emu_serout(int port, int c)
 	write(ttyfd, &c, 1);
 }
 
+static int cmd_input(char *line)
+{
+	int i, line_len, argc = 0;
+	char *argv[128];
+	static char last_line[4096];
+	static char *last_argv[128];
+	static int last_argc;
+	struct registers *regs;
+
+	line_len = strlen(line);
+	while(argc < 128 && (argv[argc] = strtok(argc ? 0 : line, " \t\n\r"))) {
+		argc++;
+	}
+
+	if(!argc) {
+		line = last_line;
+		memcpy(argv, last_argv, sizeof argv);
+		argc = last_argc;
+	}
+
+	switch(argv[0][0]) {
+	case 'q':
+		quit = 1;
+		break;
+
+	case 'c':
+		cmdmode = 0;
+		term_raw();
+		break;
+
+	case 's':
+		emu_step();
+		break;
+
+	case 'r':
+		regs = cpu_regs();
+		printf("af: %02x %02x [", (unsigned int)regs->g.r.a, (unsigned int)regs->g.r.f);
+		print_flags();
+		printf("]\n");
+		printf("bc: %02x %02x\n", (unsigned int)regs->g.r.b, (unsigned int)regs->g.r.c);
+		printf("de: %02x %02x\n", (unsigned int)regs->g.r.d, (unsigned int)regs->g.r.e);
+		printf("hl: %02x %02x\n", (unsigned int)regs->g.r.h, (unsigned int)regs->g.r.l);
+		printf("ix: %04x iy: %04x\n", (unsigned int)regs->ix, (unsigned int)regs->iy);
+		printf("sp: %04x pc: %04x\n", (unsigned int)regs->sp, (unsigned int)regs->pc);
+		printf("iff: %02x imode: %d\n", (unsigned int)regs->iff, (int)regs->imode);
+		break;
+
+	default:
+		printf("unrecognized command: %s\n", argv[0]);
+		break;
+	}
+
+	if(line != last_line) {
+		memcpy(last_line, line, line_len + 1);
+		for(i=0; i<argc; i++) {
+			last_argv[i] = last_line + (argv[i] - line);
+		}
+		last_argc = argc;
+	}
+	return 0;
+}
+
+static void print_prompt(void)
+{
+	struct registers *regs = cpu_regs();
+	printf("%04x [a:%02x f:", (unsigned int)regs->pc, (unsigned int)regs->g.r.a);
+	print_flags();
+	printf("]> ");
+	fflush(stdout);
+}
+
+struct {
+	char c;
+	unsigned int mask;
+} flagbits[] = {
+	{'s', FLAGS_S},
+	{'z', FLAGS_Z},
+	{'h', FLAGS_H},
+	{'p', FLAGS_PV},
+	{'n', FLAGS_N},
+	{'c', FLAGS_C},
+	{0, 0}
+};
+
+static void print_flags(void)
+{
+	int i;
+	struct registers *regs = cpu_regs();
+	unsigned int flags = regs->g.r.f;
+
+	for(i=0; flagbits[i].c; i++) {
+		int c = flagbits[i].c;
+		if(flags & flagbits[i].mask) {
+			c = toupper(c);
+		}
+		putchar(c);
+	}
+}
+
+static int term_raw(void)
+{
+	struct termios term;
+
+	if(tcgetattr(ttyfd, &term) == -1) {
+		perror("failed to get terminal attributes");
+		return -1;
+	}
+	term.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+	term.c_oflag &= ~OPOST;
+	term.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+	term.c_cflag &= ~(CSIZE | PARENB);
+	term.c_cflag |= CS8;
+	term.c_cc[VMIN] = 0;
+	term.c_cc[VTIME] = 1;
+	tcsetattr(ttyfd, TCSAFLUSH, &term);
+	return 0;
+}
+
+static int term_cooked(void)
+{
+	/*
+	struct termios term;
+
+	if(tcgetattr(ttyfd, &term) == -1) {
+		perror("failed to get terminal attributes");
+		return -1;
+	}
+	term.c_iflag |= IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON;
+	term.c_oflag |= OPOST;
+	term.c_lflag |= ECHO | ECHONL | ICANON | ISIG | IEXTEN;
+	term.c_cflag |= CSIZE | PARENB;
+	term.c_cflag &= ~CS8;
+	tcsetattr(ttyfd, TCSAFLUSH, &term);
+	*/
+	tcsetattr(ttyfd, TCSAFLUSH, &saved_term);
+	return 0;
+}
+
 static void sighandler(int s)
 {
-	quit = 1;
+	signal(s, sighandler);
+	if(s == SIGINT) {
+		cmdmode = 1;
+	} else {
+		quit = 1;
+	}
 }
 
 static int parse_args(int argc, char **argv)
@@ -135,6 +321,10 @@ static int parse_args(int argc, char **argv)
 
 				case 'd':
 					opt_loginstr = 1;
+					break;
+
+				case 'c':
+					cmdmode = 1;
 					break;
 
 				default:
