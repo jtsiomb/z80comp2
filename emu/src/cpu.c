@@ -17,7 +17,9 @@ enum {
 
 static const char *r8str[] = {"b", "c", "d", "e", "h", "l", "(hl)", "a", 0};
 
-#define RRSET2	4
+#define RRSET2		0x4
+#define RRSET_IX	0x8
+#define RRSET_IY	0xc
 enum {
 	RR_BC = 0,
 	RR_DE = 1,
@@ -27,10 +29,26 @@ enum {
 	RR2_BC = RRSET2 | RR_BC,
 	RR2_DE = RRSET2 | RR_DE,
 	RR2_HL = RRSET2 | RR_HL,
-	RR2_AF = RRSET2 | RR_SP
+	RR2_AF = RRSET2 | RR_SP,
+
+	RRX_BC = RRSET_IX | RR_BC,
+	RRX_DE = RRSET_IX | RR_DE,
+	RRX_IX = RRSET_IX | RR_HL,
+	RRX_SP = RRSET_IX | RR_SP,
+
+	RRY_BC = RRSET_IY | RR_BC,
+	RRY_DE = RRSET_IY | RR_DE,
+	RRY_IY = RRSET_IY | RR_HL,
+	RRY_SP = RRSET_IY | RR_SP
 };
 
-static const char *r16str[] = {"bc", "de", "hl", "sp", "bc", "de", "hl", "af", 0};
+static const char *r16str[] = {
+	"bc", "de", "hl", "sp",		/* default set */
+	"bc", "de", "hl", "af",		/* RRSET2 */
+	"bc", "de", "ix", "sp",		/* RRSET_IX */
+	"bc", "de", "iy", "sp",		/* RRSET_IY */
+	0
+};
 
 enum {
 	PREFIX_ED	= 1,
@@ -125,6 +143,9 @@ static void op_call(uint16_t addr);
 static void op_ret(void);
 static void op_input(int r, uint16_t addr);
 static void op_output(uint16_t addr, int r);
+
+static void push(uint16_t val);
+static uint16_t pop(void);
 
 static uint8_t sr_left(uint8_t x, unsigned int mode);
 static uint8_t sr_right(uint8_t x, unsigned int mode);
@@ -1019,15 +1040,171 @@ static void runop_cb(uint8_t op)
 	}
 }
 
+
+static void runop_dd_or_fd(uint8_t op, uint8_t prefix)
+{
+	uint16_t addr;
+	int8_t disp;
+	uint8_t byte;
+	uint16_t imm16;
+	int b345 = (op >> 3) & 7;
+	int b012 = op & 7;
+	const char *iregstr;
+	uint16_t *regptr;
+	unsigned int rrx_idx, rrset_bit;
+
+	if(prefix == 0xdd) {
+		iregstr = "ix";
+		regptr = &regs.ix;
+		rrset_bit = RRSET_IX;
+	} else {
+		iregstr = "iy";
+		regptr = &regs.iy;
+		rrset_bit = RRSET_IY;
+	}
+	rrx_idx = rrset_bit | RRX_IX;
+
+	switch(op) {
+	case 0x36:	/* ld (ix+d), imm8 */
+		disp = fetch_sbyte();
+		byte = fetch_byte();
+		dbg_log_instr("ld (%s+%d), $%02x", iregstr, (int)disp, byte);
+		op_store_mem_imm8(*regptr + disp, byte);
+		break;
+	case 0x21:	/* ld ix, imm16 */
+		imm16 = fetch_imm16();
+		dbg_log_instr("ld %s, $%04x", iregstr, (unsigned int)imm16);
+		*regptr = imm16;
+		break;
+	case 0x2a:	/* ld ix, (imm16) */
+		addr = fetch_imm16();
+		dbg_log_instr("ld %s, ($%04x)", iregstr, (unsigned int)addr);
+		*regptr = emu_mem_read(addr) | ((uint16_t)emu_mem_read(addr + 1) << 8);
+		break;
+	case 0x22:	/* ld (imm16), ix */
+		addr = fetch_imm16();
+		dbg_log_instr("ld ($%04x), %s", (unsigned int)addr, iregstr);
+		emu_mem_write(addr, *regptr);
+		emu_mem_write(addr + 1, *regptr >> 8);
+		break;
+	case 0xf9:	/* ld sp, ix */
+		dbg_log_instr("ld sp, %s", iregstr);
+		regs.sp = *regptr;
+		break;
+	case 0xe5:	/* push ix */
+		dbg_log_instr("push %s", iregstr);
+		push(*regptr);
+		break;
+	case 0xe1:	/* pop ix */
+		dbg_log_instr("pop %s", iregstr);
+		*regptr = pop();
+		break;
+
+		/* exchange, block transfer, block search groups */
+	case 0xe3:	/* ex (sp), ix */
+		dbg_log_instr("ex (sp), %s", iregstr);
+		imm16 = emu_mem_read(regs.sp) | ((uint16_t)emu_mem_read(regs.sp + 1) << 8);
+		emu_mem_write(regs.sp, *regptr);
+		emu_mem_write(regs.sp, *regptr >> 8);
+		*regptr = imm16;
+		break;
+
+		/* 8-bit arithmetic & logic group */
+	case 0x34:	/* inc (ix+d) */
+		disp = fetch_sbyte();
+		dbg_log_instr("inc (%s+%d)", iregstr, (int)disp);
+		op_incdec_mem(*regptr + disp, 1);
+		break;
+	case 0x35:	/* dec (ix+d) */
+		disp = fetch_sbyte();
+		dbg_log_instr("dec (%s+%d)", iregstr, (int)disp);
+		op_incdec_mem(*regptr + disp, -1);
+		break;
+
+		/* 16-bit arithmetic group */
+	case 0x49:	/* add ix, rr */
+	case 0x59:
+	case 0x69:
+	case 0x79:
+		dbg_log_instr("add %s, %s", iregstr, r16str[rrset_bit | OP_RR(op)]);
+		op_add_reg16_reg16(rrx_idx, rrset_bit | OP_RR(op));
+		break;
+	case 0x23:	/* inc ix */
+		dbg_log_instr("inc %s", iregstr);
+		op_incdec_reg16(rrx_idx, 1);
+		break;
+	case 0x2b:	/* dec ix */
+		dbg_log_instr("dec %s", iregstr);
+		op_incdec_reg16(rrx_idx, -1);
+		break;
+
+		/* jump group */
+	case 0xe9:	/* jp (ix) */
+		dbg_log_instr("jp (%s)", iregstr);
+		regs.pc = *regptr;
+		break;
+
+	default:
+		if((op & 0xc7) == 0x46) {	/* ld r, (ix+d) */
+			disp = fetch_sbyte();
+			dbg_log_instr("ld %s, (%s+%d)", r8str[b345], iregstr, (int)disp);
+			op_load_reg8_mem(b345, *regptr + disp);
+		} else if((op & 0xf8) == 0x70) { /* ld (ix+d), r */
+			disp = fetch_sbyte();
+			dbg_log_instr("ld (%s+%d), %s", iregstr, (int)disp, r8str[b012]);
+			op_store_mem_reg8(*regptr + disp, b012);
+		} else if((op & 0xc7) == 0x86) {	/* ALUOP a, (ix+d) */
+			disp = fetch_sbyte();
+			dbg_log_instr("%s a, (%s+%d)", aluopstr[b345], iregstr, (int)disp);
+			op_alu_mem(ALUOP(b345), *regptr + disp);
+		} else if((op & 0xc7) == 0x06) {	/* (ix) shift/rotate */
+			disp = fetch_sbyte();
+			addr = *regptr + disp;
+			switch(b345) {
+			case 0:	/* rlc (ix+d) */
+				dbg_log_instr("rlc (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_left(emu_mem_read(addr), SR_ROT_NOCARRY | SR_SETFL));
+				break;
+			case 1:	/* rrc (ix+d) */
+				dbg_log_instr("rrc (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_right(emu_mem_read(addr), SR_ROT_NOCARRY | SR_SETFL));
+				break;
+			case 2:	/* rl (ix+d) */
+				dbg_log_instr("rl (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_left(emu_mem_read(addr), SR_ROT_CARRY | SR_SETFL));
+				break;
+			case 3:	/* rr (ix+d) */
+				dbg_log_instr("rr (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_right(emu_mem_read(addr), SR_ROT_CARRY | SR_SETFL));
+				break;
+			case 4:	/* sla (ix+d) */
+			case 5:	/* sll (ix+d) - undocumented */
+				dbg_log_instr("sla (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_left(emu_mem_read(addr), SR_SETFL));
+				break;
+			case 6:	/* sra (ix+d) */
+				dbg_log_instr("sra (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_right(emu_mem_read(addr), SR_SIGN_EXT | SR_SETFL));
+				break;
+			case 7:	/* srl (ix+d) */
+				dbg_log_instr("srl (%s+%d)", iregstr, (int)disp);
+				emu_mem_write(addr, sr_right(emu_mem_read(addr), SR_SETFL));
+				break;
+			}
+		}
+	}
+}
+
 static void runop_dd(uint8_t op)
 {
-	/* TODO */
+	runop_dd_or_fd(op, 0xdd);
 }
 
 static void runop_fd(uint8_t op)
 {
-	/* TODO */
+	runop_dd_or_fd(op, 0xfd);
 }
+
 
 static void runop_ddcb(uint8_t op)
 {
