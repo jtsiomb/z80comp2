@@ -14,6 +14,10 @@ $(bin): monitor.asm
 clean:
 	rm -f $(bin)
 
+monitor.rom: $(bin)
+	dd if=/dev/zero of=$@ bs=1024 count=32
+	dd if=$< of=$@ bs=1024 conv=notrunc
+
 .PHONY: program
-program: $(bin)
+program: monitor.rom
 	minipro -p 'AT28C256E' -s -w $<

@@ -25,15 +25,19 @@ main:
 	ld (ix + UART_IVEC), intr & $ff
 	ld (ix + UART_IVEC + 1), intr >> 8
 
-	; --- initialize channel A ---
-	; reset TX/RX
-	ld a, UART_CMD_RST_RX
-	out (UART_REG_CMDA), a
-	ld a, UART_CMD_RST_TX
-	out (UART_REG_CMDA), a
-	; disable TX/RX
+	ld bc, INPQ_BASE
+	ld (INPQ_HEAD), bc
+	ld (INPQ_TAIL), bc
+
+	; disable TX/RX for both channels
 	ld a, UART_CMD_TX_OFF | UART_CMD_RX_OFF
 	out (UART_REG_CMDA), a
+	out (UART_REG_CMDB), a
+	; set UART interrupt vector
+	ld a, UART_IVEC
+	out (UART_REG_IVEC), a
+
+	; --- initialize channel A ---
 	; reset MODEA pointer
 	ld a, UART_CMD_RST_MPTR
 	out (UART_REG_CMDA), a
@@ -56,14 +60,6 @@ main:
 	out (UART_REG_CMDA), a
 
 	; --- initialize channel B ---
-	; reset TX/RX
-	ld a, UART_CMD_RST_RX
-	out (UART_REG_CMDB), a
-	ld a, UART_CMD_RST_TX
-	out (UART_REG_CMDB), a
-	; disable TX/RX
-	ld a, UART_CMD_TX_OFF | UART_CMD_RX_OFF
-	out (UART_REG_CMDB), a
 	; reset MODEB pointer
 	ld a, UART_CMD_RST_MPTR
 	out (UART_REG_CMDB), a
@@ -75,37 +71,47 @@ main:
 	ld a, 2
 	out (UART_REG_OSET), a
 
-	; set UART interrupt vector
-	ld a, UART_IVEC
-	out (UART_REG_IVEC), a
-
-	ld bc, INPQ_BASE
-	ld (INPQ_HEAD), bc
-	ld (INPQ_TAIL), bc
-
-	ei
+	; XXX debug the circuit read timings before re-enabling interrupts
+	; the simple polling mode should work if everything is communicating
+	; properly.
+	;ei
 
 	ld hl, str_hello
 	call uart_putstr
 
+polling:
+	nop
+	in a, (UART_REG_STATA)
+	bit 0, a
+	jr z, polling
+	in a, (UART_REG_DATAA)
+	cp 'a'
+	jr c, .out
+	cp 'z'+1
+	jr nc, .out
+	sub 32
+.out:	call uart_putchar
+	jr polling
+
 mainloop:
-	ld ix, INPQ_HEAD
-	ld a, (INPQ_TAIL)
-	cp (ix)
-	jr z, mainloop
-	; we got input
-	di
-	ld c, (ix)
-	ld b, (ix + 1)
-	ld a, (bc)
-	ex af,af'
-	ld a, c
-	inc a
-	and $f
-	ld (ix), a
-	ex af,af'
-	ei
-	call uart_putchar	; echo
+	halt
+;	ld ix, INPQ_HEAD
+;	ld a, (INPQ_TAIL)
+;	cp (ix)
+;	jr z, mainloop
+;	; we got input
+;	di
+;	ld c, (ix)
+;	ld b, (ix + 1)
+;	ld a, (bc)
+;	ex af,af'
+;	ld a, c
+;	inc a
+;	and $f
+;	ld (ix), a
+;	ex af,af'
+;	ei
+;	call uart_putchar	; echo
 	jr mainloop
 
 
@@ -127,37 +133,41 @@ uart_putstr:
 	inc hl
 	jr uart_putstr
 
-uart_pending:
-	in a, (UART_REG_STATA)
-	and 1
-	ret
-
 intr:
 	exx
 	ex af,af'
-	call uart_pending
-	and a
+	ld a, 13
+	call uart_putchar
+	ld a, 10
+	call uart_putchar
+.pending:
+	in a, (UART_REG_ISTAT)
+	and UART_IMASK_RXA
 	jr z, .eoi
 	; read from uart and append to input queue
 	in a, (UART_REG_DATAA)
-	ld hl, (INPQ_TAIL)
-	ld (hl), a
-	ld a, l
-	inc a
-	and $f
-	ld (INPQ_TAIL), a
-	ld hl, INPQ_HEAD
-	cp (hl)
-	jr nz, .eoi
-	; overflow
-	ld a, (INPQ_HEAD)
-	inc a
-	and $f
-	ld (INPQ_HEAD), a
+;	ld hl, (INPQ_TAIL)
+;	ld (hl), a
+;	ld a, l
+;	inc a
+;	and $f
+;	ld (INPQ_TAIL), a
+;	ld hl, INPQ_HEAD
+;	cp (hl)
+;	jr nz, .eoi
+;	; overflow
+;	ld a, (INPQ_HEAD)
+;	inc a
+;	and $f
+;	ld (INPQ_HEAD), a
+
+	call uart_putchar
+	jr .pending
 
 .eoi:	exx
 	ex af,af'
 	ei
 	ret
 
-str_hello asciiz 'UART interrupt-based echo test (mode 2)',13,10
+;str_hello asciiz 'UART interrupt-based echo test (mode 2)',13,10
+str_hello asciiz 'UART debug polling echo test',13,10
