@@ -184,15 +184,10 @@ static uint8_t *regptr8[8] = {
 };
 
 static uint16_t *regptr16[] = {
-	&regs.g.rr.bc,
-	&regs.g.rr.de,
-	&regs.g.rr.hl,
-	&regs.sp,
-
-	&regs.g.rr.bc,
-	&regs.g.rr.de,
-	&regs.g.rr.hl,
-	&regs.g.rr.af
+	&regs.g.rr.bc, &regs.g.rr.de, &regs.g.rr.hl, &regs.sp,
+	&regs.g.rr.bc, &regs.g.rr.de, &regs.g.rr.hl, &regs.g.rr.af,
+	&regs.g.rr.bc, &regs.g.rr.de, &regs.ix, &regs.sp,
+	&regs.g.rr.bc, &regs.g.rr.de, &regs.iy, &regs.sp
 };
 
 void cpu_reset(void)
@@ -1156,7 +1151,7 @@ static void runop_dd_or_fd(uint8_t op, uint8_t prefix)
 		} else if((op & 0xc7) == 0x86) {	/* ALUOP a, (ix+d) */
 			disp = fetch_sbyte();
 			dbg_log_instr("%s a, (%s+%d)", aluopstr[b345], iregstr, (int)disp);
-			op_alu_mem(ALUOP(b345), *regptr + disp);
+			op_alu_mem(b345, *regptr + disp);
 		} else if((op & 0xc7) == 0x06) {	/* (ix) shift/rotate */
 			disp = fetch_sbyte();
 			addr = *regptr + disp;

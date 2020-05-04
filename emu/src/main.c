@@ -238,7 +238,8 @@ static int cmd_input(char *line)
 			printf("hl: %02x %02x\n", (unsigned int)regs->g.r.h, (unsigned int)regs->g.r.l);
 			printf("ix: %04x iy: %04x\n", (unsigned int)regs->ix, (unsigned int)regs->iy);
 			printf("sp: %04x pc: %04x\n", (unsigned int)regs->sp, (unsigned int)regs->pc);
-			printf("iff: %02x imode: %d\n", (unsigned int)regs->iff, (int)regs->imode);
+			printf("iff: %d%d imode: %d\n", (int)(regs->iff >> 1) & 1, (int)(regs->iff & 1),
+					(int)regs->imode);
 		}
 		break;
 
