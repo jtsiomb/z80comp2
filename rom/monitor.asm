@@ -5,6 +5,8 @@ INPQ_SIZE equ 16
 INPQ_HEAD equ $8000
 INPQ_TAIL equ $8002
 INPQ_BASE equ $8100
+IVT_BASE equ $9000
+UART_IVEC equ 16
 
 	org 0
 	jp main
@@ -15,7 +17,13 @@ rst7:	jp intr
 	org $80
 main:
 	ld sp, $0
-	im 1
+	im 2
+
+	ld a, IVT_BASE >> 8
+	ld i, a
+	ld ix, IVT_BASE
+	ld (ix + UART_IVEC), intr & $ff
+	ld (ix + UART_IVEC + 1), intr >> 8
 
 	; --- initialize channel A ---
 	; reset TX/RX
@@ -67,6 +75,10 @@ main:
 	ld a, 2
 	out (UART_REG_OSET), a
 
+	; set UART interrupt vector
+	ld a, UART_IVEC
+	out (UART_REG_IVEC), a
+
 	ld bc, INPQ_BASE
 	ld (INPQ_HEAD), bc
 	ld (INPQ_TAIL), bc
@@ -77,19 +89,21 @@ main:
 	call uart_putstr
 
 mainloop:
+	ld ix, INPQ_HEAD
 	ld a, (INPQ_TAIL)
-	ld b, a
-	ld a, (INPQ_HEAD)
-	cp b
+	cp (ix)
 	jr z, mainloop
 	; we got input
 	di
-	ld l, a
-	ld h, INPQ_BASE >> 8
+	ld c, (ix)
+	ld b, (ix + 1)
+	ld a, (bc)
+	ex af,af'
+	ld a, c
 	inc a
 	and $f
-	ld (INPQ_HEAD), a
-	ld a, (hl)
+	ld (ix), a
+	ex af,af'
 	ei
 	call uart_putchar	; echo
 	jr mainloop
@@ -146,4 +160,4 @@ intr:
 	ei
 	ret
 
-str_hello asciiz 'The Z80 says hi!',13,10
+str_hello asciiz 'UART interrupt-based echo test (mode 2)',13,10
